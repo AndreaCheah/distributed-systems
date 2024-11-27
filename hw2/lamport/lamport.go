@@ -1,8 +1,11 @@
 package main
 
 import (
-	"fmt"
-	"time"
+    "flag"
+    "fmt"
+    "math/rand"
+    "sync"
+    "time"
 )
 
 // State represents the state of a process in the mutual exclusion algorithm.
@@ -11,8 +14,8 @@ type MessageType int
 
 const (
     Released State = iota // Process is not interested in entering the CS.
-    Wanted                // Process wants to enter the CS.
-    Held                  // Process is in the CS.
+    Wanted               // Process wants to enter the CS.
+    Held                 // Process is in the CS.
 )
 
 const (
@@ -99,7 +102,6 @@ func (p *Process) SendMessage(toID int, msg Message) {
     }
 }
 
-
 // RequestCS initiates a request to enter the critical section.
 func (p *Process) RequestCS() {
     p.Clock++ // Increment clock to reflect the passage of time
@@ -158,58 +160,65 @@ func max(a, b int) int {
 }
 
 func main() {
-    // Create two processes.
-    p1 := &Process{
-        ID:              1,
-        Clock:           0,
-        State:           Released,
-        Inbox:           make(chan Message, 10),
-        Deferred:        make(map[int]bool),
-        TotalProcs:      2,
-        ReplyChan:       make(chan bool),
-        RequestTimestamp: -1,
+    // Parse command line flags
+    numNodes := flag.Int("n", 2, "number of nodes in the system")
+    flag.Parse()
+
+    if *numNodes < 2 {
+        fmt.Println("Number of nodes must be at least 2")
+        return
     }
 
-    p2 := &Process{
-        ID:              2,
-        Clock:           0,
-        State:           Released,
-        Inbox:           make(chan Message, 10),
-        Deferred:        make(map[int]bool),
-        TotalProcs:      2,
-        ReplyChan:       make(chan bool),
-        RequestTimestamp: -1,
+    // Create processes
+    processes := make([]*Process, *numNodes)
+    for i := 0; i < *numNodes; i++ {
+        processes[i] = &Process{
+            ID:              i + 1,
+            Clock:           0,
+            State:           Released,
+            Inbox:           make(chan Message, *numNodes*2), // Buffer size scaled with number of nodes
+            Deferred:        make(map[int]bool),
+            TotalProcs:      *numNodes,
+            ReplyChan:       make(chan bool, *numNodes), // Buffer size scaled with number of nodes
+            RequestTimestamp: -1,
+        }
     }
 
-    // Set references to other processes.
-    p1.OtherProcs = []*Process{p2}
-    p2.OtherProcs = []*Process{p1}
+    // Set references to other processes
+    for i := 0; i < *numNodes; i++ {
+        otherProcs := make([]*Process, 0, *numNodes-1)
+        for j := 0; j < *numNodes; j++ {
+            if i != j {
+                otherProcs = append(otherProcs, processes[j])
+            }
+        }
+        processes[i].OtherProcs = otherProcs
+    }
 
-    // Start the processes' message handling loops.
-    p1.Start()
-    p2.Start()
+    // Start all processes
+    for _, p := range processes {
+        p.Start()
+    }
 
-    // Simulate process 1 requesting the critical section.
-    go func() {
-        p1.RequestCS()
-        // Simulate doing work in the critical section.
-        time.Sleep(1 * time.Second)
-        p1.ReleaseCS()
-    }()
+    // Use WaitGroup to coordinate process completion
+    var wg sync.WaitGroup
+    
+    // Start simulations for each process
+    for _, p := range processes {
+        wg.Add(1)
+        go func(proc *Process) {
+            defer wg.Done()
+            // Random delay before requesting CS
+            time.Sleep(time.Duration(rand.Intn(3000)) * time.Millisecond)
+            
+            proc.RequestCS()
+            // Simulate work in critical section
+            time.Sleep(1 * time.Second)
+            proc.ReleaseCS()
+        }(p)
+    }
 
-    // Simulate process 2 requesting the critical section after a delay.
-    go func() {
-        // Simulate delay before requesting CS
-        time.Sleep(2 * time.Second)
-        p2.RequestCS()
-        // Simulate doing work in the critical section.
-        time.Sleep(1 * time.Second)
-        p2.ReleaseCS()
-    }()
-
-    // Wait for user input to end the program.
-    var input string
-    fmt.Scanln(&input)
+    // Wait for all processes to complete
+    wg.Wait()
+    fmt.Println("All processes have completed")
 }
-
-
