@@ -23,6 +23,12 @@ const (
     Reply
 )
 
+var (
+    startTime time.Time
+    mutex     sync.Mutex
+    started   bool
+)
+
 // Process represents a single process in the distributed system.
 type Process struct {
     ID              int            // Unique identifier for the process.
@@ -104,6 +110,14 @@ func (p *Process) SendMessage(toID int, msg Message) {
 
 // RequestCS initiates a request to enter the critical section.
 func (p *Process) RequestCS() {
+    // Start timer on first request
+    mutex.Lock()
+    if !started {
+        startTime = time.Now()
+        started = true
+    }
+    mutex.Unlock()
+
     p.Clock++ // Increment clock to reflect the passage of time
     p.State = Wanted
     p.RequestTimestamp = p.Clock // Store the timestamp of the request
@@ -169,22 +183,22 @@ func main() {
         return
     }
 
-    // Create processes
+    // Create processes [unchanged]
     processes := make([]*Process, *numNodes)
     for i := 0; i < *numNodes; i++ {
         processes[i] = &Process{
             ID:              i + 1,
             Clock:           0,
             State:           Released,
-            Inbox:           make(chan Message, *numNodes*2), // Buffer size scaled with number of nodes
+            Inbox:           make(chan Message, *numNodes*2),
             Deferred:        make(map[int]bool),
             TotalProcs:      *numNodes,
-            ReplyChan:       make(chan bool, *numNodes), // Buffer size scaled with number of nodes
+            ReplyChan:       make(chan bool, *numNodes),
             RequestTimestamp: -1,
         }
     }
 
-    // Set references to other processes
+    // Set references to other processes [unchanged]
     for i := 0; i < *numNodes; i++ {
         otherProcs := make([]*Process, 0, *numNodes-1)
         for j := 0; j < *numNodes; j++ {
@@ -200,6 +214,9 @@ func main() {
         p.Start()
     }
 
+    // Initialize random seed
+    rand.Seed(time.Now().UnixNano())
+
     // Use WaitGroup to coordinate process completion
     var wg sync.WaitGroup
     
@@ -212,13 +229,15 @@ func main() {
             time.Sleep(time.Duration(rand.Intn(3000)) * time.Millisecond)
             
             proc.RequestCS()
-            // Simulate work in critical section
-            time.Sleep(1 * time.Second)
+
             proc.ReleaseCS()
         }(p)
     }
 
     // Wait for all processes to complete
     wg.Wait()
-    fmt.Println("All processes have completed")
+
+    // Calculate and print total time
+    totalTime := time.Since(startTime)
+    fmt.Printf("\nTotal time from first request to completion: %v\n", totalTime)
 }
