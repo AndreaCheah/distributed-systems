@@ -49,8 +49,6 @@ func startNode(node *Node, wg *sync.WaitGroup, csComplete chan bool, done chan b
 			if node.NeedsCS {
 				fmt.Printf("Node %d entering critical section\n", node.ID)
 
-				time.Sleep(time.Duration(rand.Intn(500)+500) * time.Millisecond)
-
 				fmt.Printf("Node %d exiting critical section\n", node.ID)
 
 				select {
@@ -63,8 +61,6 @@ func startNode(node *Node, wg *sync.WaitGroup, csComplete chan bool, done chan b
 			}
 
 			fmt.Printf("Node %d passing the token to Node %d\n", node.ID, node.NextNode.ID)
-
-			time.Sleep(200 * time.Millisecond)
 
 			// Try to pass the token, but also check if we should terminate
 			select {
@@ -126,7 +122,6 @@ func main() {
 				case <-done:
 					return
 				default:
-					time.Sleep(time.Duration(rand.Intn(500)+500) * time.Millisecond)
 					current := ring
 					for j := 0; j < i; j++ {
 						current = current.NextNode

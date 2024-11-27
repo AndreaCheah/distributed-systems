@@ -148,9 +148,6 @@ func (n *Node) RequestCriticalSection() {
 	fmt.Printf("Logical Clock [%d]: ====== Node %d ENTERING critical section ======\n", 
 		n.LogicalClock, n.ID)
 	
-	// Simulate some work in critical section
-	time.Sleep(time.Millisecond * 100)
-	
 	n.IncrementClock()
 	fmt.Printf("Logical Clock [%d]: ====== Node %d EXITING critical section ======\n", 
 		n.LogicalClock, n.ID)
@@ -229,8 +226,6 @@ func main() {
 	executionTime := time.Since(startTime)
 	fmt.Printf("Total execution time for %d nodes: %v\n", *numNodes, executionTime)
 
-	time.Sleep(time.Millisecond * 100)
-
 	close(done)
 
 	for i := 0; i < *numNodes; i++ {
@@ -238,6 +233,4 @@ func main() {
 	}
 
 	wg.Wait()
-
-	fmt.Println("All operations completed successfully")
 }

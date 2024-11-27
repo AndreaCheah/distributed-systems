@@ -225,7 +225,7 @@ func main() {
         wg.Add(1)
         go func(proc *Process) {
             defer wg.Done()
-            // Random delay before requesting CS
+            // Random delay before requesting CS to avoid deadlock
             time.Sleep(time.Duration(rand.Intn(3000)) * time.Millisecond)
             
             proc.RequestCS()
