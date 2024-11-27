@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const MAX_RETRIES = 3 // Maximum number of retries for invalid readings
+const MAX_RETRIES = 8 // Maximum number of retries for invalid readings
 
 func main() {
 	algorithms := []string{"ring", "lamport", "voting"}
