@@ -12,21 +12,23 @@ import (
 type State int
 type MessageType int
 
+// Possible states for a process.
 const (
     Released State = iota // Process is not interested in entering the CS.
     Wanted               // Process wants to enter the CS.
     Held                 // Process is in the CS.
 )
 
+// Message types exchanged between processes.
 const (
-    Request MessageType = iota
-    Reply
+    Request MessageType = iota // REQUEST to enter the CS.
+    Reply                     // REPLY granting permission to enter the CS.
 )
 
 var (
-    startTime time.Time
-    mutex     sync.Mutex
-    started   bool
+    startTime time.Time // Time when the first process requests CS.
+    mutex     sync.Mutex // Mutex to synchronize access to shared variables.
+    started   bool       // Tracks if the first request has been made.
 )
 
 // Process represents a single process in the distributed system.
@@ -65,20 +67,23 @@ func (p *Process) Start() {
 
 // HandleMessage processes incoming messages.
 func (p *Process) HandleMessage(msg Message) {
-    // Update the logical clock.
+    // Update the logical clock to the maximum of its own and the message's timestamp, plus 1.
     p.Clock = max(p.Clock, msg.Timestamp) + 1
 
     switch msg.Type {
     case Request:
         fmt.Printf("Process %d received REQUEST from %d at time %d\n", p.ID, msg.FromID, p.Clock)
 
-        // Determine if we should defer the reply.
+        // Determine if we should defer the reply based on mutual exclusion conditions.
         deferReply := false
-        if p.State == Held || (p.State == Wanted && (p.RequestTimestamp < msg.Timestamp || (p.RequestTimestamp == msg.Timestamp && p.ID < msg.FromID))) {
+        if p.State == Held || (p.State == Wanted && 
+            (p.RequestTimestamp < msg.Timestamp || 
+             (p.RequestTimestamp == msg.Timestamp && p.ID < msg.FromID))) {
             deferReply = true
         }
 
         if deferReply {
+            // Add the sender to the deferred replies list.
             p.Deferred[msg.FromID] = true
             fmt.Printf("Process %d deferred REPLY to %d\n", p.ID, msg.FromID)
         } else {
@@ -92,6 +97,7 @@ func (p *Process) HandleMessage(msg Message) {
             p.SendMessage(msg.FromID, replyMsg)
         }
     case Reply:
+        // Process received a REPLY message.
         fmt.Printf("Process %d received REPLY from %d at time %d\n", p.ID, msg.FromID, p.Clock)
         p.ReplyChan <- true
     }
@@ -99,10 +105,9 @@ func (p *Process) HandleMessage(msg Message) {
 
 // SendMessage sends a message to another process.
 func (p *Process) SendMessage(toID int, msg Message) {
-    // Send the message to the target process.
     for _, proc := range p.OtherProcs {
         if proc.ID == toID {
-            proc.Inbox <- msg
+            proc.Inbox <- msg // Send the message to the target process's inbox.
             break
         }
     }
@@ -110,7 +115,7 @@ func (p *Process) SendMessage(toID int, msg Message) {
 
 // RequestCS initiates a request to enter the critical section.
 func (p *Process) RequestCS() {
-    // Start timer on first request
+    // Start timer on first request.
     mutex.Lock()
     if !started {
         startTime = time.Now()
@@ -118,12 +123,12 @@ func (p *Process) RequestCS() {
     }
     mutex.Unlock()
 
-    p.Clock++ // Increment clock to reflect the passage of time
+    p.Clock++ // Increment clock to reflect the passage of time.
     p.State = Wanted
-    p.RequestTimestamp = p.Clock // Store the timestamp of the request
+    p.RequestTimestamp = p.Clock // Store the timestamp of the request.
     fmt.Printf("Process %d is requesting CS at time %d\n", p.ID, p.Clock)
 
-    // Send REQUEST to all other processes.
+    // Send REQUEST messages to all other processes.
     for _, proc := range p.OtherProcs {
         msg := Message{
             Type:      Request,
@@ -159,13 +164,14 @@ func (p *Process) ReleaseCS() {
         }
         p.SendMessage(procID, replyMsg)
         fmt.Printf("Process %d sent REPLY to %d at time %d\n", p.ID, procID, p.Clock)
-        delete(p.Deferred, procID)
+        delete(p.Deferred, procID) // Remove from deferred list.
     }
 
-    // Reset RequestTimestamp
+    // Reset the request timestamp.
     p.RequestTimestamp = -1
 }
 
+// max returns the maximum of two integers.
 func max(a, b int) int {
     if a > b {
         return a
@@ -174,7 +180,7 @@ func max(a, b int) int {
 }
 
 func main() {
-    // Parse command line flags
+    // Parse command-line flags for the number of nodes.
     numNodes := flag.Int("n", 2, "number of nodes in the system")
     flag.Parse()
 
@@ -183,7 +189,7 @@ func main() {
         return
     }
 
-    // Create processes [unchanged]
+    // Create processes.
     processes := make([]*Process, *numNodes)
     for i := 0; i < *numNodes; i++ {
         processes[i] = &Process{
@@ -198,7 +204,7 @@ func main() {
         }
     }
 
-    // Set references to other processes [unchanged]
+    // Set references to other processes.
     for i := 0; i < *numNodes; i++ {
         otherProcs := make([]*Process, 0, *numNodes-1)
         for j := 0; j < *numNodes; j++ {
@@ -209,35 +215,34 @@ func main() {
         processes[i].OtherProcs = otherProcs
     }
 
-    // Start all processes
+    // Start all processes.
     for _, p := range processes {
         p.Start()
     }
 
-    // Initialize random seed
+    // Initialize random seed for simulation delays.
     rand.Seed(time.Now().UnixNano())
 
-    // Use WaitGroup to coordinate process completion
+    // Use WaitGroup to coordinate process completion.
     var wg sync.WaitGroup
-    
-    // Start simulations for each process
+
+    // Simulate each process's request to enter CS.
     for _, p := range processes {
         wg.Add(1)
         go func(proc *Process) {
             defer wg.Done()
-            // Random delay before requesting CS to avoid deadlock
+            // Random delay before requesting CS to avoid deadlock.
             time.Sleep(time.Duration(rand.Intn(3000)) * time.Millisecond)
-            
-            proc.RequestCS()
 
+            proc.RequestCS()
             proc.ReleaseCS()
         }(p)
     }
 
-    // Wait for all processes to complete
+    // Wait for all processes to complete.
     wg.Wait()
 
-    // Calculate and print total time
+    // Calculate and print total time.
     totalTime := time.Since(startTime)
     fmt.Printf("\nTotal time from first request to completion: %v\n", totalTime)
 }
