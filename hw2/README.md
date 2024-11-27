@@ -23,7 +23,21 @@ go run ring/ring.go -n 10
 ### Run Performance Evaluation
 To view the performance of all three protocols in a table:
 ```bash
-go run performance.go
+go run performance.go -start <min_number_of_nodes> -skip <difference_in_number_of_nodes> -end <max_number_of_nodes>
 ```
 - This script evaluates each protocol with 3 to 12 nodes and displays the results in a performance table.  
 - If some time measurements are missed, the script will automatically rerun the test.
+- **Some runs may take a longer time and the script may look like it's pausing**, but please wait for awhile, like maybe a minute ish, thanks! :')
+- Recommended to run with 10-19 nodes when evaluating performance: `go run performance.go -start 10 -skip 1 -end 19` so that the runs won't take too long.
+
+Example 1  
+```bash
+go run performance.go -start 10 -skip 1 -end 19
+```
+to evaluate the performance of 10, 11, 12, ... 19 nodes.  
+
+Example 2  
+```bash
+go run performance.go -start 10 -skip 2 -end 29
+```
+to evaluate the performance of 10, 12, 14, ... 29 nodes.

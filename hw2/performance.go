@@ -1,33 +1,37 @@
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"os/exec"
 	"strings"
 	"time"
 )
 
-const MAX_RETRIES = 8 // Maximum number of retries for invalid readings
+const MAX_RETRIES = 10
 
 func main() {
+	startNodes := flag.Int("start", 10, "Starting number of nodes")
+	skipNodes := flag.Int("skip", 1, "Number of nodes to skip between tests")
+	endNodes := flag.Int("end", 19, "Ending number of nodes")
+	flag.Parse()
+
 	algorithms := []string{"ring", "lamport", "voting"}
 	results := make(map[string]map[int]time.Duration)
 	
-	// Initialize results map
 	for _, algo := range algorithms {
 		results[algo] = make(map[int]time.Duration)
 	}
 
-	// Test each algorithm with node counts 3-12
 	for _, algo := range algorithms {
 		fmt.Printf("\nTesting %s algorithm...\n", algo)
-		for nodes := 3; nodes <= 12; nodes++ {
+		for nodes := *startNodes; nodes <= *endNodes; nodes += *skipNodes {
 			fmt.Printf("  Testing with %d nodes...\n", nodes)
 			
 			var duration time.Duration
 			var success bool
 			
-			// Try up to MAX_RETRIES times to get a valid reading
 			for attempt := 1; attempt <= MAX_RETRIES; attempt++ {
 				if attempt > 1 {
 					fmt.Printf("    Retry attempt %d/%d: ", attempt, MAX_RETRIES)
@@ -35,10 +39,19 @@ func main() {
 					fmt.Printf("    First attempt: ")
 				}
 				
-				cmd := exec.Command("go", "run", fmt.Sprintf("%s/%s.go", algo, algo), "-n", fmt.Sprintf("%d", nodes))
+				// Create context with timeout that increases with node count
+				timeout := time.Duration(nodes) * 2 * time.Second
+				ctx, cancel := context.WithTimeout(context.Background(), timeout)
+				cmd := exec.CommandContext(ctx, "go", "run", fmt.Sprintf("%s/%s.go", algo, algo), "-n", fmt.Sprintf("%d", nodes))
 				output, err := cmd.CombinedOutput()
+				cancel()
+
 				if err != nil {
-					fmt.Printf("Error running command: %v\n", err)
+					if ctx.Err() == context.DeadlineExceeded {
+						fmt.Printf("Timeout after %v\n", timeout)
+					} else {
+						fmt.Printf("Error running command: %v\n", err)
+					}
 					continue
 				}
 				
@@ -56,7 +69,9 @@ func main() {
 					fmt.Printf("Invalid measurement\n")
 				}
 				
-				time.Sleep(1 * time.Second)
+				// Increase sleep time between retries for larger node counts
+				sleepTime := time.Duration(nodes) * 2 * time.Second
+				time.Sleep(sleepTime)
 			}
 			
 			if success {
@@ -67,8 +82,7 @@ func main() {
 		}
 	}
 
-	// Print results
-	printResultsTable(results)
+	printResultsTable(results, *startNodes, *endNodes, *skipNodes)
 }
 
 func parseExecutionTime(output string, algo string) (time.Duration, error) {
@@ -113,16 +127,16 @@ func parseExecutionTime(output string, algo string) (time.Duration, error) {
 	return 0, fmt.Errorf("no execution time found in output")
 }
 
-func printResultsTable(results map[string]map[int]time.Duration) {
+func printResultsTable(results map[string]map[int]time.Duration, start, end, skip int) {
 	fmt.Println("\nPerformance Results (in milliseconds):")
 	fmt.Println("Nodes | Ring | Lamport | Voting")
 	fmt.Println("------|-------|---------|--------")
 	
-	for nodes := 3; nodes <= 12; nodes++ {
+	for nodes := start; nodes <= end; nodes += skip {
 		fmt.Printf("%5d |", nodes)
 		for _, algo := range []string{"ring", "lamport", "voting"} {
 			if duration, ok := results[algo][nodes]; ok {
-				fmt.Printf("%8.2f |", float64(duration.Microseconds())/1000.0) // Convert to milliseconds
+				fmt.Printf("%8.2f |", float64(duration.Microseconds())/1000.0)
 			} else {
 				fmt.Printf("%8s |", "N/A")
 			}
