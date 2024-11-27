@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"sync"
 	"time"
@@ -22,13 +23,13 @@ type Node struct {
 	LogicalClock int
 	MessageChan  chan Message
 	Voted        bool
-	VotedFor     *PendingRequest  // Track who we voted for
+	VotedFor     *PendingRequest
 	Quorum       []*Node
 	VoteCount    int
 	QuorumSize   int
 	VoteCond     *sync.Cond
-	RequestQueue []PendingRequest // Queue to store pending requests
-	mu           sync.Mutex      // Protect shared state
+	RequestQueue []PendingRequest
+	mu           sync.Mutex
 }
 
 func (n *Node) IncrementClock() {
@@ -177,64 +178,69 @@ func (n *Node) ReleaseCriticalSection() {
 }
 
 func main() {
-	// Create nodes
-	node1 := &Node{
-		ID: 1, 
-		MessageChan: make(chan Message, 10),
-		VoteCond: sync.NewCond(&sync.Mutex{}),
-		RequestQueue: make([]PendingRequest, 0),
-	}
-	node2 := &Node{
-		ID: 2,
-		MessageChan: make(chan Message, 10),
-		VoteCond: sync.NewCond(&sync.Mutex{}),
-		RequestQueue: make([]PendingRequest, 0),
-	}
-	node3 := &Node{
-		ID: 3,
-		MessageChan: make(chan Message, 10),
-		VoteCond: sync.NewCond(&sync.Mutex{}),
-		RequestQueue: make([]PendingRequest, 0),
+	// Define command-line flag for number of nodes
+	numNodes := flag.Int("n", 3, "Number of nodes in the system")
+	flag.Parse()
+
+	if *numNodes < 2 {
+		fmt.Println("Number of nodes must be at least 2")
+		return
 	}
 
-	// Set up quorums
-	node1.Quorum = []*Node{node1, node2, node3}
-	node2.Quorum = []*Node{node1, node2, node3}
-	node3.Quorum = []*Node{node1, node2, node3}
+	// Calculate quorum size as majority (n/2 + 1)
+	quorumSize := (*numNodes / 2) + 1
 
-	// Set quorum sizes
-	node1.QuorumSize = 2
-	node2.QuorumSize = 2
-	node3.QuorumSize = 2
+	fmt.Printf("Starting system with %d nodes (quorum size: %d)\n", *numNodes, quorumSize)
+
+	// Create nodes dynamically
+	nodes := make([]*Node, *numNodes)
+	for i := 0; i < *numNodes; i++ {
+		nodes[i] = &Node{
+			ID:           i + 1,
+			MessageChan:  make(chan Message, 10),
+			VoteCond:     sync.NewCond(&sync.Mutex{}),
+			RequestQueue: make([]PendingRequest, 0),
+			QuorumSize:   quorumSize,
+		}
+	}
+
+	// Set up quorums for all nodes
+	for i := 0; i < *numNodes; i++ {
+		nodes[i].Quorum = make([]*Node, *numNodes)
+		copy(nodes[i].Quorum, nodes)
+	}
 
 	// Create done channel for cleanup
 	done := make(chan struct{})
-	
-	// Run nodes
+
+	// Start receiver goroutines for all nodes
 	var wg sync.WaitGroup
-	wg.Add(3)
-	go node1.ReceiveMessage(&wg, done)
-	go node2.ReceiveMessage(&wg, done)
-	go node3.ReceiveMessage(&wg, done)
+	wg.Add(*numNodes)
+	for i := 0; i < *numNodes; i++ {
+		go nodes[i].ReceiveMessage(&wg, done)
+	}
 
 	// Create a WaitGroup for the request operations
 	var opWg sync.WaitGroup
-	opWg.Add(2)
+	opWg.Add(*numNodes)
 
-	// Launch concurrent requests
-	go func() {
-		defer opWg.Done()
-		node1.RequestCriticalSection()
-	}()
+	// Launch concurrent requests for all nodes
+	startTime := time.Now()
+	
+	for i := 0; i < *numNodes; i++ {
+		go func(node *Node) {
+			defer opWg.Done()
+			node.RequestCriticalSection()
+		}(nodes[i])
+	}
 
-	go func() {
-		defer opWg.Done()
-		node2.RequestCriticalSection()
-	}()
-
-	// Wait for operations to complete
+	// Wait for all operations to complete
 	fmt.Println("Waiting for operations to complete...")
 	opWg.Wait()
+
+	// Calculate and print total execution time
+	executionTime := time.Since(startTime)
+	fmt.Printf("Total execution time for %d nodes: %v\n", *numNodes, executionTime)
 
 	// Allow time for final messages to be processed
 	time.Sleep(time.Millisecond * 100)
@@ -242,13 +248,13 @@ func main() {
 	// Signal done to all receiver goroutines
 	close(done)
 
-	// Close message channels
-	close(node1.MessageChan)
-	close(node2.MessageChan)
-	close(node3.MessageChan)
+	// Close all message channels
+	for i := 0; i < *numNodes; i++ {
+		close(nodes[i].MessageChan)
+	}
 
 	// Wait for all receiver goroutines to finish
 	wg.Wait()
-	
+
 	fmt.Println("All operations completed successfully")
 }
