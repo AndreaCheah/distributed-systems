@@ -56,6 +56,14 @@ type Config struct {
     scenario       string
     writeFraction  float64
     numOperations  int
+
+	// FT-specific fields
+	primaryFailures int
+	primaryRestarts int
+	backupFailures  int
+	backupRestarts  int
+	failureInterval int
+	restartDelay    int
 }
 
 // OperationResult stores the result of an operation
@@ -64,4 +72,13 @@ type OperationResult struct {
     duration    time.Duration
     err         error
     isWrite     bool
+}
+
+type FTCentralManager struct {
+    *CentralManager
+    isBackup     bool
+    isAvailable  bool
+    backupCM     *FTCentralManager
+    failureCount int
+    restartCount int
 }

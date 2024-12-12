@@ -12,13 +12,21 @@ import (
 func parseFlags() *Config {
     config := &Config{}
     
-    flag.StringVar(&config.mode, "mode", "basic", "Operation mode (basic/fault-tolerant)")
+    flag.StringVar(&config.mode, "mode", "basic", "Operation mode (basic/ft)")
     flag.IntVar(&config.clients, "clients", 10, "Number of clients")
     flag.StringVar(&config.workload, "workload", "random", "Workload type (random/read-intensive/write-intensive)")
     flag.StringVar(&config.faults, "faults", "none", "Fault injection mode (none/single/multiple/primary-and-backup)")
     flag.StringVar(&config.scenario, "scenario", "", "Simulation scenario")
     flag.Float64Var(&config.writeFraction, "write-fraction", -1.0, "Fraction of write operations (0.0-1.0)")
     flag.IntVar(&config.numOperations, "operations", 10, "Number of operations to perform")
+    
+    // Add FT-specific flags
+    flag.IntVar(&config.primaryFailures, "primary-failures", 0, "Number of times primary CM fails")
+    flag.IntVar(&config.primaryRestarts, "primary-restarts", 0, "Number of times primary CM restarts")
+    flag.IntVar(&config.backupFailures, "backup-failures", 0, "Number of times backup CM fails")
+    flag.IntVar(&config.backupRestarts, "backup-restarts", 0, "Number of times backup CM restarts")
+    flag.IntVar(&config.failureInterval, "failure-interval", 10, "Number of operations between failures")
+    flag.IntVar(&config.restartDelay, "restart-delay", 1000, "Milliseconds to wait before restart")
     
     flag.Parse()
 
@@ -31,20 +39,26 @@ func parseFlags() *Config {
         default:
             config.writeFraction = 0.5
         }
-    } else {
-        if config.writeFraction < 0.0 || config.writeFraction > 1.0 {
-            log.Fatal("Write fraction must be between 0.0 and 1.0")
-        }
-        
-        if config.workload == "read-intensive" && config.writeFraction > 0.5 {
-            log.Fatal("Read-intensive workload cannot have write fraction > 0.5")
-        }
-        if config.workload == "write-intensive" && config.writeFraction < 0.5 {
-            log.Fatal("Write-intensive workload cannot have write fraction < 0.5")
-        }
+    }
+
+    // Validate FT-specific configuration
+    if config.mode == "ft" {
+        validateFTConfig(config)
     }
 
     return config
+}
+
+func validateFTConfig(config *Config) {
+    if config.primaryRestarts > config.primaryFailures {
+        log.Fatal("Primary CM restart count cannot exceed failure count")
+    }
+    if config.backupRestarts > config.backupFailures {
+        log.Fatal("Backup CM restart count cannot exceed failure count")
+    }
+    if config.primaryFailures > 0 && config.failureInterval <= 0 {
+        log.Fatal("Failure interval must be positive when failures are configured")
+    }
 }
 
 func generateWorkload(config *Config) []Operation {
@@ -151,9 +165,9 @@ func testCacheBehavior(clients []*Client) {
 func main() {
     config := parseFlags()
     
-    if config.mode != "basic" {
-        log.Fatal("Only basic mode is implemented in this version")
-    }
+    // if config.mode != "basic" {
+    //     log.Fatal("Only basic mode is implemented in this version")
+    // }
     
     cm := NewCentralManager()
     numPages := 5
