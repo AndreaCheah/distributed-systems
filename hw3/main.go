@@ -22,7 +22,10 @@ type Page struct {
 type CentralManager struct {
     pages     map[int]*Page    // Map of page ID to page metadata
     pageOwner map[int]int      // Map of page ID to current owner
-    mu        sync.RWMutex
+	copySets  map[int]map[int]bool  // pageID -> set of clientIDs that have copies
+	clients   map[int]*Client
+	writeQueue map[int][]WriteRequest  // pageID -> queue of write requests
+	mu        sync.RWMutex
 }
 
 // Client represents a node in the system
@@ -31,6 +34,12 @@ type Client struct {
     CM     *CentralManager
     pages  map[int]*Page
     mu     sync.RWMutex
+}
+
+type WriteRequest struct {
+    clientID int
+    data     []byte
+    done     chan error
 }
 
 // Configuration holds the command line parameters
@@ -58,8 +67,11 @@ func parseFlags() *Config {
 // NewCentralManager creates a new central manager instance
 func NewCentralManager() *CentralManager {
     return &CentralManager{
-        pages:     make(map[int]*Page),
-        pageOwner: make(map[int]int),
+        pages:      make(map[int]*Page),
+        pageOwner:  make(map[int]int),
+        copySets:   make(map[int]map[int]bool),
+        clients:    make(map[int]*Client),
+        writeQueue: make(map[int][]WriteRequest),
     }
 }
 
@@ -72,24 +84,72 @@ func NewClient(id int, cm *CentralManager) *Client {
     }
 }
 
+func (c *Client) getLocalPage(pageID int) (*Page, bool) {
+    c.mu.RLock()
+    defer c.mu.RUnlock()
+    
+    page, exists := c.pages[pageID]
+    if !exists {
+        return nil, false
+    }
+    
+    // Verify version with central manager
+    c.CM.mu.RLock()
+    cmPage, exists := c.CM.pages[pageID]
+    c.CM.mu.RUnlock()
+    
+    if !exists || cmPage.Version > page.Version {
+        // Local copy is stale, remove it
+        delete(c.pages, pageID)
+        fmt.Printf("Client %d: Detected stale version of page %d (local: %d, current: %d)\n",
+            c.ID, pageID, page.Version, cmPage.Version)
+        return nil, false
+    }
+    
+    return page, true
+}
+
+func (c *Client) setLocalPage(page *Page) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.pages[page.ID] = page
+}
+
+func (c *Client) invalidatePage(pageID int) {
+    c.mu.Lock()
+    delete(c.pages, pageID)
+    c.mu.Unlock()
+    fmt.Printf("Client %d: Invalidated cache for page %d\n", c.ID, pageID)
+}
+
+func (cm *CentralManager) RegisterClient(client *Client) {
+    cm.mu.Lock()
+    defer cm.mu.Unlock()
+    cm.clients[client.ID] = client
+}
+
 // ReadPage handles a read request from a client
 func (cm *CentralManager) ReadPage(pageID int, clientID int) (*Page, error) {
-    simulateNetworkLatency() // Simulate network delay for request
+    simulateNetworkLatency()
     
-    // First get the page reference using CM lock
     cm.mu.RLock()
     page, exists := cm.pages[pageID]
-    cm.mu.RUnlock()
-    
     if !exists {
+        cm.mu.RUnlock()
         return nil, fmt.Errorf("page %d not found", pageID)
     }
+    
+    // Add client to copy set
+    if _, exists := cm.copySets[pageID]; !exists {
+        cm.copySets[pageID] = make(map[int]bool)
+    }
+    cm.copySets[pageID][clientID] = true
+    currentVersion := page.Version
+    cm.mu.RUnlock()
     
     // Lock the specific page for reading
     page.mu.RLock()
     defer page.mu.RUnlock()
-    
-    simulateNetworkLatency() // Simulate network delay for page transfer
     
     // Create a copy of the page data
     dataCopy := append([]byte(nil), page.Data...)
@@ -98,42 +158,48 @@ func (cm *CentralManager) ReadPage(pageID int, clientID int) (*Page, error) {
         ID:      page.ID,
         Data:    dataCopy,
         Owner:   page.Owner,
-        Version: page.Version,
+        Version: currentVersion,
     }, nil
 }
 
 // WritePage handles a write request from a client
 func (cm *CentralManager) WritePage(pageID int, clientID int, data []byte) error {
-    simulateNetworkLatency() // Simulate network delay for request
-    
-    // First get or create the page using CM lock
+    done := make(chan error, 1)
+    req := WriteRequest{
+        clientID: clientID,
+        data:     data,
+        done:     done,
+    }
+
     cm.mu.Lock()
-    page, exists := cm.pages[pageID]
-    if !exists {
-        page = &Page{
-            ID:   pageID,
-            Data: make([]byte, 0),
+    if _, exists := cm.writeQueue[pageID]; !exists {
+        cm.writeQueue[pageID] = make([]WriteRequest, 0)
+    }
+    cm.writeQueue[pageID] = append(cm.writeQueue[pageID], req)
+    isFirst := len(cm.writeQueue[pageID]) == 1
+    cm.mu.Unlock()
+
+    if isFirst {
+        // Process this request immediately
+        go cm.processWriteRequest(pageID, req)
+    }
+
+    // Wait for write to complete
+    err := <-done
+
+    // If this request is done, process next in queue if any
+    cm.mu.Lock()
+    queue := cm.writeQueue[pageID]
+    if len(queue) > 0 && queue[0].done == done {
+        cm.writeQueue[pageID] = queue[1:]
+        if len(cm.writeQueue[pageID]) > 0 {
+            nextReq := cm.writeQueue[pageID][0]
+            go cm.processWriteRequest(pageID, nextReq)
         }
-        cm.pages[pageID] = page
     }
     cm.mu.Unlock()
-    
-    // Lock the specific page for writing
-    page.mu.Lock()
-    defer page.mu.Unlock()
-    
-    if page.Owner != clientID {
-        simulateNetworkLatency() // Simulate network delay for ownership transfer
-        cm.mu.Lock()
-        cm.pageOwner[pageID] = clientID
-        cm.mu.Unlock()
-        page.Owner = clientID
-    }
-    
-    page.Data = append([]byte(nil), data...)
-    page.Version++
-    
-    return nil
+
+    return err
 }
 
 // Operation represents a single read or write operation
@@ -150,8 +216,37 @@ func (client *Client) ExecuteOperation(op Operation) error {
         return client.CM.WritePage(op.pageID, client.ID, op.data)
     }
     
-    _, err := client.CM.ReadPage(op.pageID, client.ID)
-    return err
+    // Check local cache first
+    if localPage, exists := client.getLocalPage(op.pageID); exists {
+        fmt.Printf("Client %d: Cache hit for page %d (version %d)\n", 
+            client.ID, op.pageID, localPage.Version)
+        return nil
+    }
+    
+    fmt.Printf("Client %d: Cache miss for page %d, fetching from CM\n", 
+        client.ID, op.pageID)
+    
+    // Cache miss - fetch from central manager
+    page, err := client.CM.ReadPage(op.pageID, client.ID)
+    if err != nil {
+        return err
+    }
+    
+    // Store in local cache
+    client.setLocalPage(page)
+    
+    // Update copySet in central manager
+    client.CM.mu.Lock()
+    if _, exists := client.CM.copySets[op.pageID]; !exists {
+        client.CM.copySets[op.pageID] = make(map[int]bool)
+    }
+    client.CM.copySets[op.pageID][client.ID] = true
+    client.CM.mu.Unlock()
+    
+    fmt.Printf("Client %d: Cached page %d (version %d)\n", 
+        client.ID, op.pageID, page.Version)
+    
+    return nil
 }
 
 // Initialize pages in the central manager
@@ -168,6 +263,60 @@ func (cm *CentralManager) initializePages(numPages int) {
         }
         cm.pageOwner[i] = 0
     }
+}
+
+func (cm *CentralManager) processWriteRequest(pageID int, req WriteRequest) {
+	cm.mu.Lock()
+    // Verify this is the first request in queue
+    if len(cm.writeQueue[pageID]) == 0 || cm.writeQueue[pageID][0].done != req.done {
+        cm.mu.Unlock()
+        req.done <- fmt.Errorf("write request out of order")
+        return
+    }
+    cm.mu.Unlock()
+
+	// Process invalidations
+    cm.mu.Lock()
+    if copySet, exists := cm.copySets[pageID]; exists {
+        for cid := range copySet {
+            if cid != req.clientID {
+                fmt.Printf("CM: Sending invalidation for page %d to client %d\n", pageID, cid)
+                if client, exists := cm.clients[cid]; exists {
+                    client.invalidatePage(pageID)
+                }
+            }
+        }
+        // Clear the copy set, keeping only the writer
+        cm.copySets[pageID] = map[int]bool{req.clientID: true}
+    }
+
+    page, exists := cm.pages[pageID]
+    if !exists {
+        page = &Page{
+            ID:   pageID,
+            Data: make([]byte, 0),
+        }
+        cm.pages[pageID] = page
+    }
+
+    // Transfer ownership
+    if page.Owner != req.clientID {
+        fmt.Printf("CM: Transferring ownership of page %d from client %d to client %d\n",
+            pageID, page.Owner, req.clientID)
+        cm.pageOwner[pageID] = req.clientID
+        page.Owner = req.clientID
+    }
+    cm.mu.Unlock()
+
+    // Perform the write
+    page.mu.Lock()
+    page.Data = append([]byte(nil), req.data...)
+    page.Version++
+    fmt.Printf("CM: Page %d updated to version %d by client %d\n", 
+        pageID, page.Version, req.clientID)
+    page.mu.Unlock()
+
+    req.done <- nil
 }
 
 // OperationMetrics stores timing information for operations
@@ -262,6 +411,38 @@ func ExecuteOperationsConcurrently(clients []*Client, operations []Operation) []
     return results
 }
 
+func testCacheBehavior(clients []*Client) {
+    fmt.Println("\n=== Testing Cache Behavior ===")
+    
+    testOps := []Operation{
+        {isWrite: false, pageID: 0, clientID: 1}, // First read by client 1
+        {isWrite: false, pageID: 0, clientID: 1}, // Second read by client 1 (should hit cache)
+        {isWrite: false, pageID: 0, clientID: 2}, // Read by client 2 (should be cache miss)
+        {isWrite: false, pageID: 0, clientID: 2}, // Second read by client 2 (should hit cache)
+    }
+    
+    for i, op := range testOps {
+        fmt.Printf("\nOperation %d:\n", i+1)
+        err := clients[op.clientID].ExecuteOperation(op)
+        if err != nil {
+            fmt.Printf("Error: %v\n", err)
+        }
+    }
+    
+    // Print final copy set state
+    fmt.Println("\nFinal copy set state:")
+    clients[0].CM.mu.RLock()
+    for pageID, copySet := range clients[0].CM.copySets {
+        fmt.Printf("Page %d is cached by clients: ", pageID)
+        for clientID := range copySet {
+            fmt.Printf("%d ", clientID)
+        }
+        fmt.Println()
+    }
+    clients[0].CM.mu.RUnlock()
+    fmt.Println("=== Cache Test Complete ===\n")
+}
+
 func main() {
     config := parseFlags()
     
@@ -280,14 +461,18 @@ func main() {
         clients[i] = NewClient(i, cm)
     }
     
-    // Generate workload
-    operations := generateWorkload(config)
+    // First run the cache behavior test
+    testCacheBehavior(clients)
     
+    // Then run the main workload
     fmt.Printf("Running Ivy with configuration:\n")
     fmt.Printf("Mode: %s\n", config.mode)
     fmt.Printf("Clients: %d\n", config.clients)
     fmt.Printf("Workload: %s\n", config.workload)
     fmt.Printf("Number of pages: %d\n", numPages)
+    
+    // Generate and execute workload
+    operations := generateWorkload(config)
     fmt.Printf("Operations to perform: %d\n", len(operations))
     
     fmt.Printf("\nExecuting operations concurrently...\n")
@@ -299,12 +484,14 @@ func main() {
     totalTime := time.Since(start)
     
     // Process and display results
+    fmt.Printf("\nOperation Results:\n")
+    
+    // Process and display results
     var totalReadTime time.Duration
     var totalWriteTime time.Duration
     readCount := 0
     writeCount := 0
     
-    fmt.Printf("\nOperation Results:\n")
     for i, result := range results {
         opType := "READ"
         if operations[i].isWrite {
