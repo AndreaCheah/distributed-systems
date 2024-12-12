@@ -44,11 +44,13 @@ type WriteRequest struct {
 
 // Configuration holds the command line parameters
 type Config struct {
-    mode      string
-    clients   int
-    workload  string
-    faults    string
-    scenario  string
+    mode           string
+    clients        int
+    workload       string
+    faults         string
+    scenario       string
+    writeFraction  float64  
+    numOperations  int      
 }
 
 func parseFlags() *Config {
@@ -59,8 +61,36 @@ func parseFlags() *Config {
     flag.StringVar(&config.workload, "workload", "random", "Workload type (random/read-intensive/write-intensive)")
     flag.StringVar(&config.faults, "faults", "none", "Fault injection mode (none/single/multiple/primary-and-backup)")
     flag.StringVar(&config.scenario, "scenario", "", "Simulation scenario")
+    flag.Float64Var(&config.writeFraction, "write-fraction", -1.0, "Fraction of write operations (0.0-1.0)")
+    flag.IntVar(&config.numOperations, "operations", 10, "Number of operations to perform")
     
     flag.Parse()
+
+    // Set default write fractions based on workload type if not specified
+    if config.writeFraction < 0 {
+        switch config.workload {
+        case "read-intensive":
+            config.writeFraction = 0.1 // 10% writes by default
+        case "write-intensive":
+            config.writeFraction = 0.9 // 90% writes by default
+        default:
+            config.writeFraction = 0.5 // 50% writes for random workload
+        }
+    } else {
+        // Validate write fraction
+        if config.writeFraction < 0.0 || config.writeFraction > 1.0 {
+            log.Fatal("Write fraction must be between 0.0 and 1.0")
+        }
+        
+        // For read/write intensive workloads, validate the fraction makes sense
+        if config.workload == "read-intensive" && config.writeFraction > 0.5 {
+            log.Fatal("Read-intensive workload cannot have write fraction > 0.5")
+        }
+        if config.workload == "write-intensive" && config.writeFraction < 0.5 {
+            log.Fatal("Write-intensive workload cannot have write fraction < 0.5")
+        }
+    }
+
     return config
 }
 
@@ -335,24 +365,36 @@ func (m *OperationMetrics) duration() time.Duration {
 // Generate a random workload based on configuration
 func generateWorkload(config *Config) []Operation {
     rand.Seed(time.Now().UnixNano())
-    operations := make([]Operation, 10) // Start with just 10 operations for testing
+    operations := make([]Operation, config.numOperations)
     numPages := 5 // Use 5 pages for testing
     
-    for i := 0; i < 10; i++ {
-        isWrite := rand.Float32() < 0.5 // 50% chance of write for random workload
-        if config.workload == "read-intensive" {
-            isWrite = rand.Float32() < 0.1 // 10% chance of write
-        } else if config.workload == "write-intensive" {
-            isWrite = rand.Float32() < 0.9 // 90% chance of write
-        }
-        
+    // Calculate exact number of writes needed
+    numWrites := int(float64(config.numOperations) * config.writeFraction + 0.5) // Round to nearest integer
+    
+    // Create a slice to track which operations will be writes
+    isWrite := make([]bool, config.numOperations)
+    
+    // Set the first numWrites operations to be writes
+    for i := 0; i < numWrites; i++ {
+        isWrite[i] = true
+    }
+    
+    // Shuffle the isWrite slice to randomize write positions
+    for i := len(isWrite) - 1; i > 0; i-- {
+        j := rand.Intn(i + 1)
+        isWrite[i], isWrite[j] = isWrite[j], isWrite[i]
+    }
+    
+    // Generate the operations
+    for i := 0; i < config.numOperations; i++ {
         operations[i] = Operation{
-            isWrite:  isWrite,
+            isWrite:  isWrite[i],
             pageID:   rand.Intn(numPages),
             clientID: rand.Intn(config.clients),
             data:     []byte(fmt.Sprintf("data-%d", i)),
         }
     }
+    
     return operations
 }
 
@@ -465,10 +507,12 @@ func main() {
     testCacheBehavior(clients)
     
     // Then run the main workload
-    fmt.Printf("Running Ivy with configuration:\n")
+    fmt.Printf("\nRunning Ivy with configuration:\n")
     fmt.Printf("Mode: %s\n", config.mode)
     fmt.Printf("Clients: %d\n", config.clients)
     fmt.Printf("Workload: %s\n", config.workload)
+    fmt.Printf("Write fraction: %.2f\n", config.writeFraction)
+    fmt.Printf("Number of operations: %d\n", config.numOperations)
     fmt.Printf("Number of pages: %d\n", numPages)
     
     // Generate and execute workload
@@ -486,7 +530,6 @@ func main() {
     // Process and display results
     fmt.Printf("\nOperation Results:\n")
     
-    // Process and display results
     var totalReadTime time.Duration
     var totalWriteTime time.Duration
     readCount := 0
