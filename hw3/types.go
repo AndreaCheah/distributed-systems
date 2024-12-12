@@ -27,9 +27,17 @@ type CentralManager struct {
 // Client represents a node in the system
 type Client struct {
     ID    int
-    CM    *CentralManager
+    CM    ManagerInterface
     pages map[int]*Page
     mu    sync.RWMutex
+}
+
+func NewClient(id int, manager ManagerInterface) *Client {
+    return &Client{
+        ID:    id,
+        CM:    manager,
+        pages: make(map[int]*Page),
+    }
 }
 
 // WriteRequest represents a pending write operation
@@ -74,11 +82,99 @@ type OperationResult struct {
     isWrite     bool
 }
 
-type FTCentralManager struct {
+type BackupCentralManager struct {
     *CentralManager
-    isBackup     bool
-    isAvailable  bool
-    backupCM     *FTCentralManager
-    failureCount int
-    restartCount int
+    isPrimary bool
+    isActive  bool
+    partner   *BackupCentralManager
+    mu        sync.RWMutex
+}
+
+type MetadataUpdate struct {
+    Type      string      // "page", "owner", "copyset", "write"
+    PageID    int
+    Data      interface{} // The actual update data
+    Timestamp time.Time
+}
+
+// ManagerInterface defines the common interface for both basic and FT modes
+type ManagerInterface interface {
+    ReadPage(pageID int, clientID int) (*Page, error)
+    WritePage(pageID int, clientID int, data []byte) error
+    RegisterClient(client *Client)
+    initializePages(numPages int)
+    GetCopySets() map[int]map[int]bool
+    GetPages() map[int]*Page
+    Lock()
+    Unlock()
+    RLock()
+    RUnlock()
+}
+
+// CentralManager implements ManagerInterface
+func (cm *CentralManager) GetCopySets() map[int]map[int]bool {
+    return cm.copySets
+}
+
+func (cm *CentralManager) GetPages() map[int]*Page {
+    return cm.pages
+}
+
+func (cm *CentralManager) Lock() {
+    cm.mu.Lock()
+}
+
+func (cm *CentralManager) Unlock() {
+    cm.mu.Unlock()
+}
+
+func (cm *CentralManager) RLock() {
+    cm.mu.RLock()
+}
+
+func (cm *CentralManager) RUnlock() {
+    cm.mu.RUnlock()
+}
+
+// Modify BackupCentralManager to implement ManagerInterface
+func (bcm *BackupCentralManager) GetCopySets() map[int]map[int]bool {
+    return bcm.CentralManager.GetCopySets()
+}
+
+func (bcm *BackupCentralManager) GetPages() map[int]*Page {
+    return bcm.CentralManager.GetPages()
+}
+
+func (bcm *BackupCentralManager) Lock() {
+    bcm.mu.Lock()
+}
+
+func (bcm *BackupCentralManager) Unlock() {
+    bcm.mu.Unlock()
+}
+
+func (bcm *BackupCentralManager) RLock() {
+    bcm.mu.RLock()
+}
+
+func (bcm *BackupCentralManager) RUnlock() {
+    bcm.mu.RUnlock()
+}
+
+// Factory function to create appropriate manager based on mode
+func CreateManager(config *Config) ManagerInterface {
+    if config.mode == "ft" {
+        // Create primary and backup CMs for fault-tolerant mode
+        primaryCM := NewBackupCentralManager(true)
+        backupCM := NewBackupCentralManager(false)
+        SetupReplication(primaryCM, backupCM)
+        
+        // Start periodic sync
+        primaryCM.startPeriodicSync(5 * time.Second)
+        
+        return primaryCM
+    }
+    
+    // Return basic CentralManager for non-FT mode
+    return NewCentralManager()
 }

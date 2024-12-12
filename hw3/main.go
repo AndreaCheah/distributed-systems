@@ -131,6 +131,7 @@ func ExecuteOperationsConcurrently(clients []*Client, operations []Operation) []
     return results
 }
 
+// Update testCacheBehavior to use interface methods
 func testCacheBehavior(clients []*Client) {
     fmt.Println("\n=== Testing Cache Behavior ===")
     
@@ -150,55 +151,20 @@ func testCacheBehavior(clients []*Client) {
     }
     
     fmt.Println("\nFinal copy set state:")
-    clients[0].CM.mu.RLock()
-    for pageID, copySet := range clients[0].CM.copySets {
+    clients[0].CM.RLock()
+    for pageID, copySet := range clients[0].CM.GetCopySets() {
         fmt.Printf("Page %d is cached by clients: ", pageID)
         for clientID := range copySet {
             fmt.Printf("%d ", clientID)
         }
         fmt.Println()
     }
-    clients[0].CM.mu.RUnlock()
+    clients[0].CM.RUnlock()
     fmt.Println("=== Cache Test Complete ===")
 }
 
-func main() {
-    config := parseFlags()
-    
-    // if config.mode != "basic" {
-    //     log.Fatal("Only basic mode is implemented in this version")
-    // }
-    
-    cm := NewCentralManager()
-    numPages := 5
-    cm.initializePages(numPages)
-    
-    clients := make([]*Client, config.clients)
-    for i := 0; i < config.clients; i++ {
-        clients[i] = NewClient(i, cm)
-        cm.RegisterClient(clients[i])
-    }
-    
-    testCacheBehavior(clients)
-    
-    fmt.Printf("\nRunning Ivy with configuration:\n")
-    fmt.Printf("Mode: %s\n", config.mode)
-    fmt.Printf("Clients: %d\n", config.clients)
-    fmt.Printf("Workload: %s\n", config.workload)
-    fmt.Printf("Write fraction: %.2f\n", config.writeFraction)
-    fmt.Printf("Number of operations: %d\n", config.numOperations)
-    fmt.Printf("Number of pages: %d\n", numPages)
-    
-    operations := generateWorkload(config)
-    fmt.Printf("Operations to perform: %d\n", len(operations))
-    
-    fmt.Printf("\nExecuting operations concurrently...\n")
-    start := time.Now()
-    
-    results := ExecuteOperationsConcurrently(clients, operations)
-    
-    totalTime := time.Since(start)
-    
+// Helper function to print results
+func printResults(results []OperationResult, operations []Operation, totalTime time.Duration) {
     fmt.Printf("\nOperation Results:\n")
     
     var totalReadTime time.Duration
@@ -243,4 +209,50 @@ func main() {
     fmt.Printf("Total operations:   %d (Reads: %d, Writes: %d)\n", 
         len(operations), readCount, writeCount)
     fmt.Printf("Total execution time: %.2fms\n", float64(totalTime.Microseconds())/1000)
+}
+
+func main() {
+    config := parseFlags()
+    
+    // Create appropriate manager based on mode
+    manager := CreateManager(config)
+    
+    // Initialize pages
+    numPages := 5
+    manager.initializePages(numPages)
+    
+    // Create and register clients
+    clients := make([]*Client, config.clients)
+    for i := 0; i < config.clients; i++ {
+        clients[i] = NewClient(i, manager)
+        manager.RegisterClient(clients[i])
+    }
+    
+    // Run cache behavior tests
+    if _, ok := manager.(*CentralManager); ok {
+        testCacheBehavior(clients)
+    } else {
+        fmt.Println("Skipping cache behavior test in FT mode")
+    }
+    
+    fmt.Printf("\nRunning Ivy with configuration:\n")
+    fmt.Printf("Mode: %s\n", config.mode)
+    fmt.Printf("Clients: %d\n", config.clients)
+    fmt.Printf("Workload: %s\n", config.workload)
+    fmt.Printf("Write fraction: %.2f\n", config.writeFraction)
+    fmt.Printf("Number of operations: %d\n", config.numOperations)
+    fmt.Printf("Number of pages: %d\n", numPages)
+    
+    operations := generateWorkload(config)
+    fmt.Printf("Operations to perform: %d\n", len(operations))
+    
+    fmt.Printf("\nExecuting operations concurrently...\n")
+    start := time.Now()
+    
+    results := ExecuteOperationsConcurrently(clients, operations)
+    
+    totalTime := time.Since(start)
+    
+    // Print results and statistics
+    printResults(results, operations, totalTime)
 }
