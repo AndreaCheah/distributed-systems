@@ -145,7 +145,7 @@ func testCacheBehavior(clients []*Client) {
         fmt.Println()
     }
     clients[0].CM.mu.RUnlock()
-    fmt.Println("=== Cache Test Complete ===\n")
+    fmt.Println("=== Cache Test Complete ===")
 }
 
 func main() {

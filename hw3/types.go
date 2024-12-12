@@ -58,23 +58,10 @@ type Config struct {
     numOperations  int
 }
 
-// OperationMetrics stores timing information for operations
-type OperationMetrics struct {
-    startTime time.Time
-    endTime   time.Time
-    opType    string
-    pageID    int
-    clientID  int
-}
-
 // OperationResult stores the result of an operation
 type OperationResult struct {
     operationID int
     duration    time.Duration
     err         error
     isWrite     bool
-}
-
-func (m *OperationMetrics) duration() time.Duration {
-    return m.endTime.Sub(m.startTime)
 }
