@@ -76,24 +76,27 @@ func NewClient(id int, cm *CentralManager) *Client {
 func (cm *CentralManager) ReadPage(pageID int, clientID int) (*Page, error) {
     simulateNetworkLatency() // Simulate network delay for request
     
+    // First get the page reference using CM lock
     cm.mu.RLock()
-    defer cm.mu.RUnlock()
-    
     page, exists := cm.pages[pageID]
+    cm.mu.RUnlock()
+    
     if !exists {
         return nil, fmt.Errorf("page %d not found", pageID)
     }
     
-    ownerID := cm.pageOwner[pageID]
-    if ownerID == clientID {
-        return page, nil
-    }
+    // Lock the specific page for reading
+    page.mu.RLock()
+    defer page.mu.RUnlock()
     
     simulateNetworkLatency() // Simulate network delay for page transfer
     
+    // Create a copy of the page data
+    dataCopy := append([]byte(nil), page.Data...)
+    
     return &Page{
         ID:      page.ID,
-        Data:    append([]byte(nil), page.Data...),
+        Data:    dataCopy,
         Owner:   page.Owner,
         Version: page.Version,
     }, nil
@@ -103,9 +106,8 @@ func (cm *CentralManager) ReadPage(pageID int, clientID int) (*Page, error) {
 func (cm *CentralManager) WritePage(pageID int, clientID int, data []byte) error {
     simulateNetworkLatency() // Simulate network delay for request
     
+    // First get or create the page using CM lock
     cm.mu.Lock()
-    defer cm.mu.Unlock()
-    
     page, exists := cm.pages[pageID]
     if !exists {
         page = &Page{
@@ -114,13 +116,20 @@ func (cm *CentralManager) WritePage(pageID int, clientID int, data []byte) error
         }
         cm.pages[pageID] = page
     }
+    cm.mu.Unlock()
+    
+    // Lock the specific page for writing
+    page.mu.Lock()
+    defer page.mu.Unlock()
     
     if page.Owner != clientID {
         simulateNetworkLatency() // Simulate network delay for ownership transfer
+        cm.mu.Lock()
+        cm.pageOwner[pageID] = clientID
+        cm.mu.Unlock()
+        page.Owner = clientID
     }
     
-    cm.pageOwner[pageID] = clientID
-    page.Owner = clientID
     page.Data = append([]byte(nil), data...)
     page.Version++
     
@@ -205,6 +214,54 @@ func simulateNetworkLatency() {
     time.Sleep(delay)
 }
 
+// OperationResult stores the result of an operation
+type OperationResult struct {
+    operationID int
+    duration    time.Duration
+    err         error
+    isWrite     bool
+}
+
+// ExecuteOperationsConcurrently runs all operations concurrently and collects results
+func ExecuteOperationsConcurrently(clients []*Client, operations []Operation) []OperationResult {
+    results := make([]OperationResult, len(operations))
+    var wg sync.WaitGroup
+    resultsChan := make(chan OperationResult, len(operations))
+
+    // Launch each operation in its own goroutine
+    for i, op := range operations {
+        wg.Add(1)
+        go func(opID int, operation Operation) {
+            defer wg.Done()
+            
+            client := clients[operation.clientID]
+            start := time.Now()
+            
+            err := client.ExecuteOperation(operation)
+            
+            resultsChan <- OperationResult{
+                operationID: opID,
+                duration:    time.Since(start),
+                err:        err,
+                isWrite:    operation.isWrite,
+            }
+        }(i, op)
+    }
+
+    // Start a goroutine to close results channel once all operations are done
+    go func() {
+        wg.Wait()
+        close(resultsChan)
+    }()
+
+    // Collect results as they come in
+    for result := range resultsChan {
+        results[result.operationID] = result
+    }
+
+    return results
+}
+
 func main() {
     config := parseFlags()
     
@@ -231,47 +288,45 @@ func main() {
     fmt.Printf("Clients: %d\n", config.clients)
     fmt.Printf("Workload: %s\n", config.workload)
     fmt.Printf("Number of pages: %d\n", numPages)
+    fmt.Printf("Operations to perform: %d\n", len(operations))
     
-    // Track metrics
-    metrics := make([]OperationMetrics, len(operations))
+    fmt.Printf("\nExecuting operations concurrently...\n")
+    start := time.Now()
+    
+    // Execute operations concurrently and collect results
+    results := ExecuteOperationsConcurrently(clients, operations)
+    
+    totalTime := time.Since(start)
+    
+    // Process and display results
     var totalReadTime time.Duration
     var totalWriteTime time.Duration
     readCount := 0
     writeCount := 0
     
-    fmt.Printf("\nExecuting operations:\n")
-    for i, op := range operations {
+    fmt.Printf("\nOperation Results:\n")
+    for i, result := range results {
         opType := "READ"
-        if op.isWrite {
+        if operations[i].isWrite {
             opType = "WRITE"
         }
         
-        client := clients[op.clientID]
-        
-        metrics[i].startTime = time.Now()
-        metrics[i].opType = opType
-        metrics[i].pageID = op.pageID
-        metrics[i].clientID = op.clientID
-        
-        err := client.ExecuteOperation(op)
-        
-        metrics[i].endTime = time.Now()
-        duration := metrics[i].duration()
-        
-        if op.isWrite {
-            totalWriteTime += duration
-            writeCount++
-        } else {
-            totalReadTime += duration
-            readCount++
-        }
-        
-        if err != nil {
+        if result.err != nil {
             fmt.Printf("Operation %d: %s on page %d by client %d - ERROR: %v (took %.2fms)\n",
-                i, opType, op.pageID, op.clientID, err, float64(duration.Microseconds())/1000)
+                i, opType, operations[i].pageID, operations[i].clientID, result.err,
+                float64(result.duration.Microseconds())/1000)
         } else {
             fmt.Printf("Operation %d: %s on page %d by client %d - SUCCESS (took %.2fms)\n",
-                i, opType, op.pageID, op.clientID, float64(duration.Microseconds())/1000)
+                i, opType, operations[i].pageID, operations[i].clientID,
+                float64(result.duration.Microseconds())/1000)
+        }
+        
+        if operations[i].isWrite {
+            totalWriteTime += result.duration
+            writeCount++
+        } else {
+            totalReadTime += result.duration
+            readCount++
         }
     }
     
@@ -287,4 +342,5 @@ func main() {
     }
     fmt.Printf("Total operations:   %d (Reads: %d, Writes: %d)\n", 
         len(operations), readCount, writeCount)
+    fmt.Printf("Total execution time: %.2fms\n", float64(totalTime.Microseconds())/1000)
 }
