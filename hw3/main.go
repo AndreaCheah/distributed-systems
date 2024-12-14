@@ -102,8 +102,10 @@ func ExecuteOperationsConcurrently(clients []*Client, operations []Operation, co
 
     // Get reference to primary CM for failure injection
     var primaryCM *PrimaryCentralManager
+    var backupCM *PrimaryCentralManager
     if config.mode == "ft" {
         primaryCM = clients[0].CM.(*PrimaryCentralManager)
+        backupCM = primaryCM.partner
         primaryCM.failures = config.primaryFailures
     }
 
@@ -121,8 +123,8 @@ func ExecuteOperationsConcurrently(clients []*Client, operations []Operation, co
                     primaryCM.failures--
                     
                     // Promote backup to active
-                    if primaryCM.partner != nil {
-                        err := primaryCM.partner.PromoteToActive()
+                    if backupCM != nil {
+                        err := backupCM.PromoteToActive()
                         if err != nil {
                             fmt.Printf("Error promoting backup: %v\n", err)
                         }
@@ -137,7 +139,7 @@ func ExecuteOperationsConcurrently(clients []*Client, operations []Operation, co
             var err error
             if primaryCM != nil && primaryCM.failed.Load() && client.CM == primaryCM {
                 // Switch client to use backup CM
-                client.CM = primaryCM.partner
+                client.CM = backupCM
                 fmt.Printf("Client %d switched to backup CM\n", client.ID)
             }
             
@@ -247,12 +249,60 @@ func printResults(results []OperationResult, operations []Operation, totalTime t
 func main() {
     config := parseFlags()
     
-    // Create appropriate manager based on mode
-    manager := CreateManager(config)
+    // Declare manager variable
+    var manager ManagerInterface
     
+    // Create appropriate manager based on mode
+    var primaryCM *PrimaryCentralManager
+    var backupCM *PrimaryCentralManager
+    
+    if config.mode == "ft" {
+        // Create primary and backup CMs for fault-tolerant mode
+        primaryCM = NewPrimaryCentralManager(true)
+        backupCM = NewPrimaryCentralManager(false)
+        SetupReplication(primaryCM, backupCM)
+        
+        // Start periodic sync
+        primaryCM.startPeriodicSync(5 * time.Second)
+        
+        manager = primaryCM
+        
+        fmt.Println("\n=== Initial Fault Tolerant Setup ===")
+        fmt.Printf("Primary CM created and active: %v\n", primaryCM.isActive)
+        fmt.Printf("Backup CM created and active: %v\n", backupCM.isActive)
+    } else {
+        manager = NewCentralManager()
+    }
+    
+    // Rest of the main function remains the same...
     // Initialize pages
     numPages := 5
     manager.initializePages(numPages)
+    
+    if config.mode == "ft" {
+        fmt.Println("\n=== Verifying Initial Page Sync ===")
+        primaryCM.mu.RLock()
+        backupCM.mu.RLock()
+        
+        fmt.Println("\nPrimary CM pages:")
+        for pageID, page := range primaryCM.pages {
+            page.mu.RLock()
+            fmt.Printf("Page %d: Version %d, Owner %d, Data %s\n",
+                pageID, page.Version, page.Owner, string(page.Data))
+            page.mu.RUnlock()
+        }
+        
+        fmt.Println("\nBackup CM pages:")
+        for pageID, page := range backupCM.pages {
+            page.mu.RLock()
+            fmt.Printf("Page %d: Version %d, Owner %d, Data %s\n",
+                pageID, page.Version, page.Owner, string(page.Data))
+            page.mu.RUnlock()
+        }
+        
+        primaryCM.mu.RUnlock()
+        backupCM.mu.RUnlock()
+    }
     
     // Create and register clients
     clients := make([]*Client, config.clients)
@@ -261,11 +311,11 @@ func main() {
         manager.RegisterClient(clients[i])
     }
     
-    // Run cache behavior tests
+    // Run cache behavior tests if not in FT mode
     if _, ok := manager.(*CentralManager); ok {
         testCacheBehavior(clients)
     } else {
-        fmt.Println("Skipping cache behavior test in FT mode")
+        fmt.Println("\nSkipping cache behavior test in FT mode")
     }
     
     fmt.Printf("\nRunning Ivy with configuration:\n")
@@ -288,4 +338,67 @@ func main() {
     
     // Print results and statistics
     printResults(results, operations, totalTime)
+    
+    if config.mode == "ft" {
+        fmt.Println("\n=== Final Sync Verification ===")
+        fmt.Println("\nVerifying final state synchronization between Primary and Backup...")
+        
+        primaryCM.mu.RLock()
+        backupCM.mu.RLock()
+        
+        // Compare pages
+        syncSuccess := true
+        for pageID, primaryPage := range primaryCM.pages {
+            backupPage, exists := backupCM.pages[pageID]
+            if !exists {
+                fmt.Printf("ERROR: Page %d exists in Primary but not in Backup\n", pageID)
+                syncSuccess = false
+                continue
+            }
+            
+            primaryPage.mu.RLock()
+            backupPage.mu.RLock()
+            
+            if primaryPage.Version != backupPage.Version ||
+               primaryPage.Owner != backupPage.Owner ||
+               string(primaryPage.Data) != string(backupPage.Data) {
+                fmt.Printf("ERROR: Page %d mismatch:\n", pageID)
+                fmt.Printf("  Primary: Version %d, Owner %d, Data %s\n",
+                    primaryPage.Version, primaryPage.Owner, string(primaryPage.Data))
+                fmt.Printf("  Backup:  Version %d, Owner %d, Data %s\n",
+                    backupPage.Version, backupPage.Owner, string(backupPage.Data))
+                syncSuccess = false
+            }
+            
+            primaryPage.mu.RUnlock()
+            backupPage.mu.RUnlock()
+        }
+        
+        // Compare copy sets
+        for pageID, primaryCopySet := range primaryCM.copySets {
+            backupCopySet, exists := backupCM.copySets[pageID]
+            if !exists {
+                fmt.Printf("ERROR: Copy set for page %d exists in Primary but not in Backup\n", pageID)
+                syncSuccess = false
+                continue
+            }
+            
+            for clientID := range primaryCopySet {
+                if !backupCopySet[clientID] {
+                    fmt.Printf("ERROR: Client %d in Primary's copy set for page %d but not in Backup's\n",
+                        clientID, pageID)
+                    syncSuccess = false
+                }
+            }
+        }
+        
+        primaryCM.mu.RUnlock()
+        backupCM.mu.RUnlock()
+        
+        if syncSuccess {
+            fmt.Println("SUCCESS: Primary and Backup CMs are fully synchronized!")
+        } else {
+            fmt.Println("WARNING: Synchronization issues detected between Primary and Backup CMs")
+        }
+    }
 }

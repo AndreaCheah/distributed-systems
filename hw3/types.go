@@ -93,6 +93,8 @@ type PrimaryCentralManager struct {
 	failed    atomic.Bool
     failures  int
     opCounter atomic.Int32
+	snapshots map[int]int
+	versionVector *VersionVector
 }
 
 type MetadataUpdate struct {
@@ -100,6 +102,17 @@ type MetadataUpdate struct {
     PageID    int
     Data      interface{} // The actual update data
     Timestamp time.Time
+}
+
+type CopySetUpdate struct {
+    PageID   int
+    ClientID int
+    Action   string // "add" or "remove"
+}
+
+type VersionVector struct {
+    versions map[int]int  // pageID -> version
+    mu       sync.RWMutex
 }
 
 // ManagerInterface defines the common interface for both basic and FT modes

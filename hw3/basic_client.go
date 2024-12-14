@@ -1,7 +1,7 @@
 package main
 
 import (
-    "fmt"
+	"fmt"
 )
 
 // Operation execution methods
@@ -25,19 +25,6 @@ func (client *Client) ExecuteOperation(op Operation) error {
     }
     
     client.setLocalPage(page)
-    
-    // Use interface methods for copy set management
-    client.CM.Lock()
-    copySets := client.CM.GetCopySets()
-    if _, exists := copySets[op.pageID]; !exists {
-        copySets[op.pageID] = make(map[int]bool)
-    }
-    copySets[op.pageID][client.ID] = true
-    client.CM.Unlock()
-    
-    fmt.Printf("Client %d: Cached page %d (version %d)\n", 
-        client.ID, op.pageID, page.Version)
-    
     return nil
 }
 
