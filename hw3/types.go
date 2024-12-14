@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -88,6 +89,10 @@ type PrimaryCentralManager struct {
     isActive  bool
     partner   *PrimaryCentralManager
     mu        sync.RWMutex
+
+	failed    atomic.Bool
+    failures  int
+    opCounter atomic.Int32
 }
 
 type MetadataUpdate struct {

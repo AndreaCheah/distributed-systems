@@ -24,7 +24,7 @@ func SetupReplication(primary, backup *PrimaryCentralManager) {
 
 func (bcm *PrimaryCentralManager) WritePage(pageID int, clientID int, data []byte) error {
     if !bcm.isPrimary && !bcm.isActive {
-        return fmt.Errorf("backup CM is not active")
+        return fmt.Errorf("primary CM is not active")
     }
 
     // Create metadata update for replication
@@ -48,7 +48,7 @@ func (bcm *PrimaryCentralManager) WritePage(pageID int, clientID int, data []byt
 
 func (bcm *PrimaryCentralManager) ReadPage(pageID int, clientID int) (*Page, error) {
     if !bcm.isPrimary && !bcm.isActive {
-        return nil, fmt.Errorf("backup CM is not active")
+        return nil, fmt.Errorf("primary CM is not active")
     }
 
     // Create metadata update for replication

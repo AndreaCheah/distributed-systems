@@ -95,20 +95,53 @@ func simulateNetworkLatency() {
     time.Sleep(delay)
 }
 
-func ExecuteOperationsConcurrently(clients []*Client, operations []Operation) []OperationResult {
+func ExecuteOperationsConcurrently(clients []*Client, operations []Operation, config *Config) []OperationResult {
     results := make([]OperationResult, len(operations))
     var wg sync.WaitGroup
     resultsChan := make(chan OperationResult, len(operations))
+
+    // Get reference to primary CM for failure injection
+    var primaryCM *PrimaryCentralManager
+    if config.mode == "ft" {
+        primaryCM = clients[0].CM.(*PrimaryCentralManager)
+        primaryCM.failures = config.primaryFailures
+    }
 
     for i, op := range operations {
         wg.Add(1)
         go func(opID int, operation Operation) {
             defer wg.Done()
             
+            // Simulate primary failure if conditions are met
+            if primaryCM != nil && primaryCM.failures > 0 {
+                opCount := primaryCM.opCounter.Add(1)
+                if opCount == int32(config.failureInterval) && !primaryCM.failed.Load() {
+                    fmt.Printf("\nTriggering primary CM failure after %d operations\n", opCount)
+                    primaryCM.failed.Store(true)
+                    primaryCM.failures--
+                    
+                    // Promote backup to active
+                    if primaryCM.partner != nil {
+                        err := primaryCM.partner.PromoteToActive()
+                        if err != nil {
+                            fmt.Printf("Error promoting backup: %v\n", err)
+                        }
+                    }
+                }
+            }
+            
             client := clients[operation.clientID]
             start := time.Now()
             
-            err := client.ExecuteOperation(operation)
+            // Check if primary has failed
+            var err error
+            if primaryCM != nil && primaryCM.failed.Load() && client.CM == primaryCM {
+                // Switch client to use backup CM
+                client.CM = primaryCM.partner
+                fmt.Printf("Client %d switched to backup CM\n", client.ID)
+            }
+            
+            err = client.ExecuteOperation(operation)
             
             resultsChan <- OperationResult{
                 operationID: opID,
@@ -249,7 +282,7 @@ func main() {
     fmt.Printf("\nExecuting operations concurrently...\n")
     start := time.Now()
     
-    results := ExecuteOperationsConcurrently(clients, operations)
+    results := ExecuteOperationsConcurrently(clients, operations, config)
     
     totalTime := time.Since(start)
     
