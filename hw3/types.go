@@ -82,11 +82,11 @@ type OperationResult struct {
     isWrite     bool
 }
 
-type BackupCentralManager struct {
+type PrimaryCentralManager struct {
     *CentralManager
     isPrimary bool
     isActive  bool
-    partner   *BackupCentralManager
+    partner   *PrimaryCentralManager
     mu        sync.RWMutex
 }
 
@@ -136,28 +136,28 @@ func (cm *CentralManager) RUnlock() {
     cm.mu.RUnlock()
 }
 
-// Modify BackupCentralManager to implement ManagerInterface
-func (bcm *BackupCentralManager) GetCopySets() map[int]map[int]bool {
+// Modify PrimaryCentralManager to implement ManagerInterface
+func (bcm *PrimaryCentralManager) GetCopySets() map[int]map[int]bool {
     return bcm.CentralManager.GetCopySets()
 }
 
-func (bcm *BackupCentralManager) GetPages() map[int]*Page {
+func (bcm *PrimaryCentralManager) GetPages() map[int]*Page {
     return bcm.CentralManager.GetPages()
 }
 
-func (bcm *BackupCentralManager) Lock() {
+func (bcm *PrimaryCentralManager) Lock() {
     bcm.mu.Lock()
 }
 
-func (bcm *BackupCentralManager) Unlock() {
+func (bcm *PrimaryCentralManager) Unlock() {
     bcm.mu.Unlock()
 }
 
-func (bcm *BackupCentralManager) RLock() {
+func (bcm *PrimaryCentralManager) RLock() {
     bcm.mu.RLock()
 }
 
-func (bcm *BackupCentralManager) RUnlock() {
+func (bcm *PrimaryCentralManager) RUnlock() {
     bcm.mu.RUnlock()
 }
 
@@ -165,8 +165,8 @@ func (bcm *BackupCentralManager) RUnlock() {
 func CreateManager(config *Config) ManagerInterface {
     if config.mode == "ft" {
         // Create primary and backup CMs for fault-tolerant mode
-        primaryCM := NewBackupCentralManager(true)
-        backupCM := NewBackupCentralManager(false)
+        primaryCM := NewPrimaryCentralManager(true)
+        backupCM := NewPrimaryCentralManager(false)
         SetupReplication(primaryCM, backupCM)
         
         // Start periodic sync

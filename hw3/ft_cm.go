@@ -5,9 +5,9 @@ import (
     "time"
 )
 
-// NewBackupCentralManager creates a new backup CM instance
-func NewBackupCentralManager(isPrimary bool) *BackupCentralManager {
-    return &BackupCentralManager{
+// NewPrimaryCentralManager creates a new backup CM instance
+func NewPrimaryCentralManager(isPrimary bool) *PrimaryCentralManager {
+    return &PrimaryCentralManager{
         CentralManager: NewCentralManager(),
         isPrimary:     isPrimary,
         isActive:      isPrimary, // Primary starts active, backup starts inactive
@@ -15,14 +15,14 @@ func NewBackupCentralManager(isPrimary bool) *BackupCentralManager {
 }
 
 // SetupReplication establishes the connection between primary and backup CMs
-func SetupReplication(primary, backup *BackupCentralManager) {
+func SetupReplication(primary, backup *PrimaryCentralManager) {
     primary.partner = backup
     backup.partner = primary
 }
 
 // Overridden methods to handle replication
 
-func (bcm *BackupCentralManager) WritePage(pageID int, clientID int, data []byte) error {
+func (bcm *PrimaryCentralManager) WritePage(pageID int, clientID int, data []byte) error {
     if !bcm.isPrimary && !bcm.isActive {
         return fmt.Errorf("backup CM is not active")
     }
@@ -46,7 +46,7 @@ func (bcm *BackupCentralManager) WritePage(pageID int, clientID int, data []byte
     return bcm.CentralManager.WritePage(pageID, clientID, data)
 }
 
-func (bcm *BackupCentralManager) ReadPage(pageID int, clientID int) (*Page, error) {
+func (bcm *PrimaryCentralManager) ReadPage(pageID int, clientID int) (*Page, error) {
     if !bcm.isPrimary && !bcm.isActive {
         return nil, fmt.Errorf("backup CM is not active")
     }
@@ -70,7 +70,7 @@ func (bcm *BackupCentralManager) ReadPage(pageID int, clientID int) (*Page, erro
     return bcm.CentralManager.ReadPage(pageID, clientID)
 }
 
-func (bcm *BackupCentralManager) RegisterClient(client *Client) {
+func (bcm *PrimaryCentralManager) RegisterClient(client *Client) {
     bcm.mu.Lock()
     defer bcm.mu.Unlock()
 
@@ -89,7 +89,7 @@ func (bcm *BackupCentralManager) RegisterClient(client *Client) {
 
 // Replication helpers
 
-func (bcm *BackupCentralManager) replicateUpdate(update MetadataUpdate) error {
+func (bcm *PrimaryCentralManager) replicateUpdate(update MetadataUpdate) error {
     if bcm.partner == nil {
         return fmt.Errorf("no backup CM configured")
     }
@@ -97,7 +97,7 @@ func (bcm *BackupCentralManager) replicateUpdate(update MetadataUpdate) error {
     return bcm.partner.applyUpdate(update)
 }
 
-func (bcm *BackupCentralManager) applyUpdate(update MetadataUpdate) error {
+func (bcm *PrimaryCentralManager) applyUpdate(update MetadataUpdate) error {
     bcm.mu.Lock()
     defer bcm.mu.Unlock()
 
@@ -149,7 +149,7 @@ func (bcm *BackupCentralManager) applyUpdate(update MetadataUpdate) error {
 
 // Failover support
 
-func (bcm *BackupCentralManager) PromoteToActive() error {
+func (bcm *PrimaryCentralManager) PromoteToActive() error {
     bcm.mu.Lock()
     defer bcm.mu.Unlock()
 
@@ -162,7 +162,7 @@ func (bcm *BackupCentralManager) PromoteToActive() error {
     return nil
 }
 
-func (bcm *BackupCentralManager) Deactivate() error {
+func (bcm *PrimaryCentralManager) Deactivate() error {
     bcm.mu.Lock()
     defer bcm.mu.Unlock()
 
@@ -176,7 +176,7 @@ func (bcm *BackupCentralManager) Deactivate() error {
 }
 
 // Periodic synchronization
-func (bcm *BackupCentralManager) startPeriodicSync(interval time.Duration) {
+func (bcm *PrimaryCentralManager) startPeriodicSync(interval time.Duration) {
     if !bcm.isPrimary {
         return // Only primary should initiate sync
     }
@@ -194,7 +194,7 @@ func (bcm *BackupCentralManager) startPeriodicSync(interval time.Duration) {
     }()
 }
 
-func (bcm *BackupCentralManager) synchronizeMetadata() {
+func (bcm *PrimaryCentralManager) synchronizeMetadata() {
     bcm.mu.RLock()
     defer bcm.mu.RUnlock()
 
@@ -236,7 +236,7 @@ func (bcm *BackupCentralManager) synchronizeMetadata() {
 }
 
 // Initialize pages for both primary and backup
-func (bcm *BackupCentralManager) initializePages(numPages int) {
+func (bcm *PrimaryCentralManager) initializePages(numPages int) {
     bcm.mu.Lock()
     defer bcm.mu.Unlock()
     
