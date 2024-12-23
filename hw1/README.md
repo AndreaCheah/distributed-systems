@@ -1,5 +1,5 @@
 ## How to run
-In the PSET1_1006125 directory, run `go run question_number / question_number.go` to see the output for each question.  
+In the parent directory, run `go run question_number / question_number.go` to see the output for each question.  
 For example, to see the output for Question 1.1, run `go run 1_1/1_1.go`.
 
 ## To note
